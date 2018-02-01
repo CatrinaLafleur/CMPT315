@@ -1,0 +1,6 @@
+TODO:
+
+*implement the RESTful API (in GO)
+*implement the database (in PostgreSQL)
+*Ensure the 8 use cases are able to be completed
+*Document the API 
