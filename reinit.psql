@@ -1,0 +1,56 @@
+DROP DATABASE IF EXISTS surveysystem;
+
+CREATE DATABASE surveysystem;
+
+\c surveysystem
+
+CREATE TABLE users (
+  user_id SERIAL PRIMARY KEY,
+
+  -- users can have the same name
+  user_name text NOT NULL
+);
+
+CREATE TABLE classes (
+  class_id text PRIMARY KEY,
+
+  class_name text NOT NULL
+);
+
+CREATE TABLE questions (
+  question_id serial PRIMARY KEY,
+
+  question_text text NOT NULL
+);
+
+CREATE TABLE answers (
+  answer_id serial PRIMARY KEY,
+
+  answer_text text NOT NULL, 
+  is_correct boolean NOT NULL
+);
+
+CREATE TABLE questions_and_answers (
+  qa_id serial PRIMARY KEY,
+
+  question_id integer NOT NULL REFERENCES questions(question_id),
+  answer_id integer NOT NULL REFERENCES answers(answer_id)
+);
+
+CREATE TABLE question_lists (
+  class_id text NOT NULL REFERENCES classes(class_id),
+  qa_id integer NOT NULL REFERENCES questions_and_answers(qa_id)
+);
+
+CREATE TABLE class_lists (
+  class_id text NOT NULL REFERENCES classes(class_id),
+  user_id integer NOT NULL REFERENCES users(user_id)
+);
+
+CREATE TABLE student_answers (
+  user_id integer NOT NULL REFERENCES users(user_id),
+  question_id integer NOT NULL REFERENCES questions(question_id),
+  answer_id integer NOT NULL REFERENCES answers(answer_id)
+
+  UNIQUE(user_id, question_id, answer_id)
+);
