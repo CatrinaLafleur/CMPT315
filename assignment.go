@@ -8,17 +8,21 @@
 package main
 
 import (
-	"errors"
 	"fmt"
 	"os"
-	"path"
 	"strings"
 	"math/rand"
 	"time"
+	"net/http"
+	"io"
+	"bytes"
 
 	"github.com/jmoiron/sqlx"
 	"github.com/lib/pq"
 )
+
+var variable *bytes.Buffer = &bytes.Buffer{}
+var db *sqlx.DB
 
 //Create the structures that mirror the database
 type user struct {
@@ -68,26 +72,24 @@ type studentAnswer struct {
 }
  
 func main() {
+	var err error
 	//Connect to the database if fails, exit the program
-	db, err := connectToDB()
+	db, err = connectToDB()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "cannot connect to database: %v\n", err)
 		os.Exit(1)
 	}
+	
+	//The API handlers
+	http.HandleFunc("/api/v1/classes", handleClasses)
 
-	err = executeCommand(db)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "cannot execute command: %v\n\n", err)
-		fmt.Fprintf(os.Stderr, "run '%s help' for help\n", path.Base(os.Args[0]))
-		os.Exit(1)
-	}
+	http.ListenAndServe(":8080", nil)
 }
-//Ensures that the unique constraint on studentAnswers is upheld 
+//Ensures that the unique constraint is upheld 
 func isUniqueViolation(err error) bool {
 	if err, ok := err.(*pq.Error); ok {
 		return err.Code == "23505"
 	}
-
 	return false
 }
 
@@ -96,94 +98,55 @@ func connectToDB() (*sqlx.DB, error) {
 	return sqlx.Connect("postgres", "dbname=surveysystem user=catrina sslmode=disable")
 }
 
-// executeCommand executes the specified command (specified on the
-// command line)
-func executeCommand(db *sqlx.DB) error {
-	commands := map[string]func(*sqlx.DB) error{
-		"help": func(db *sqlx.DB) error {
-			displayUsage()
-			return nil
-		},
-		"createClass":  createClass,
-		"listClasses":   listClasses,
-		"createQuestion": createQuestion,
-		"listQuestions": listQuestions,
-		"deleteQuestion": deleteQuestion,
-		"createAnswer": createAnswer,
-		"listAnswers": listAnswers,
-		"deleteAnswer": deleteAnswer,
-		"createQA": createQA,
-		"listQA": listQA,
-		"deleteQA": deleteQA,
-		"createQuestionList": createQuestionList,
-		"listQuestionList": listQuestionList,
-		"deleteQuestionList": deleteQuestionList,
-		"createUser": createUser,
-		"listUsers": listUsers,
-		"createClassList": createClassList,
-		"listClassList": listClassList,
-		"createStudentAnswer": createStudentAnswer,
-		"listStudentAnswers": listStudentAnswers,
-		"updateStudentAnswer": updateStudentAnswer,
+//Handles /api/v1/classes
+func handleClasses(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case "GET":
+		err := listClasses(w)
+		if err != nil {
+			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+			return
+		}
+		_, err = io.Copy(w, variable)
+		if err != nil {
+			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+			return
+		}
+	case "POST":
+		err := createClass()
+		if err != nil {
+			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+			return
+		}
+		_, err = io.Copy(variable, r.Body)
+		if err != nil {
+			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+			return
+		}
+	default:
+		http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
+		return
 	}
-
-	if len(os.Args) == 1 {
-		return errors.New("required command missing")
-	}
-
-	// attempt to lookup and then execute the command
-	if f, ok := commands[os.Args[1]]; ok {
-		return f(db)
-	} else {
-		return fmt.Errorf("unknown command (%v)", os.Args[1])
-	}
-}
-
-// displayUsage displays a usage message
-func displayUsage() {
-	fmt.Fprintf(os.Stderr, `usage: %s command [args...]
-
-Commands:
-  help
-  createClass  name
-  listClasses
-  createQuestion prompt
-  listQuestions
-  deleteQuestion ID
-  createAnswer text isCorrect
-  listAnswers
-  deleteAnswer ID
-  createQA question_id answer_id
-  listQA
-  deleteQA ID
-  createQuestionList qa_id class_id
-  listQuestionList
-  deleteQuestionList ID
-  createUser name
-  listUsers
-  createClassList class_id user_id
-  listClassList 
-  createStudentAnswer user_id question_id answer_id
-  listStudentAnswers
-  updateStudentAnswer sa_id answer_id
-`, path.Base(os.Args[0]))
 }
 
 // createClass inserts a new class into the database
-func createClass(db *sqlx.DB) error {
-	// check the arguments
-	args := os.Args[2:]
-	if len(args) != 1 {
-		return fmt.Errorf("one argument required: class_name")
+func createClass() error {
+	//With the front end this would be gathered from text boxes
+	var response string
+	fmt.Printf("Enter the class name: ")
+	_, err := fmt.Scanln(&response)
+	if err != nil {
+		return err
 	}
+
 	id := makeString()
 	// insert the data
 	q := `INSERT INTO classes (class_id, class_name)
                    VALUES ($1, $2)`
-	result, err := db.Exec(q, id, args[0])
+	result, err := db.Exec(q, id, response)
 	if err != nil {
 		if isUniqueViolation(err) {
-			createClass(db)
+			createClass()
 		}
 		return err
 	}
@@ -210,7 +173,7 @@ func makeString() string {
 }
 
 // listClasses displays a table of all the classes in the database
-func listClasses(db *sqlx.DB) error {
+func listClasses(w http.ResponseWriter) error {
 	// obtain the data
 	q := `SELECT class_id, class_name
                 FROM classes`
@@ -221,17 +184,17 @@ func listClasses(db *sqlx.DB) error {
 	}
 
 	// display the data
-	fmt.Printf("ID   name\n")
-	fmt.Printf("--------------------------------\n")
+	fmt.Fprintf(w, "ID   name\n")
+	fmt.Fprintf(w, "--------------------------------\n")
 	for _, class := range classes {
-		fmt.Printf("%s %s\n", class.ClassId, class.ClassName)
+		fmt.Fprintf(w, "%s %s\n", class.ClassId, class.ClassName)
 	}
 
 	return nil
 }
 
 // createQuestion inserts a new Question into the database
-func createQuestion(db *sqlx.DB) error {
+func createQuestion() error {
 	// check the arguments
 	args := os.Args[2:]
 	if len(args) != 1 {
@@ -253,7 +216,7 @@ func createQuestion(db *sqlx.DB) error {
 }
 
 // listQuestions displays a table of all the questions in the database
-func listQuestions(db *sqlx.DB) error {
+func listQuestions(w http.ResponseWriter) error {
 	// obtain the data
 	q := `SELECT question_id, question_text
                 FROM questions`
@@ -264,17 +227,17 @@ func listQuestions(db *sqlx.DB) error {
 	}
 
 	// display the data
-	fmt.Printf("ID   prompt\n")
-	fmt.Printf("--------------------------------\n")
+	fmt.Fprintf(w, "ID   prompt\n")
+	fmt.Fprintf(w, "--------------------------------\n")
 	for _, question := range questions {
-		fmt.Printf("%-4d %s\n", question.QuestionId, question.QuestionText)
+		fmt.Fprintf(w, "%-4d %s\n", question.QuestionId, question.QuestionText)
 	}
 
 	return nil
 }
 
 // deleteQuestion deletes a question from the database
-func deleteQuestion(db *sqlx.DB) error {
+func deleteQuestion() error {
 	// check the arguments
 	args := os.Args[2:]
 	if len(args) != 1 {
@@ -300,7 +263,7 @@ func deleteQuestion(db *sqlx.DB) error {
 }
 
 // createAnswer inserts a new answer into the database
-func createAnswer(db *sqlx.DB) error {
+func createAnswer() error {
 	// check the arguments
 	args := os.Args[2:]
 	if len(args) != 2 {
@@ -324,7 +287,7 @@ func createAnswer(db *sqlx.DB) error {
 
 
 // listAnswers displays a table of all the answers in the database
-func listAnswers(db *sqlx.DB) error {
+func listAnswers() error {
 	// obtain the data
 	q := `SELECT answer_id, answer_text, is_correct
                 FROM answers`
@@ -345,7 +308,7 @@ func listAnswers(db *sqlx.DB) error {
 }
 
 // deleteAnswer deletes an answer from the database
-func deleteAnswer(db *sqlx.DB) error {
+func deleteAnswer() error {
 	// check the arguments
 	args := os.Args[2:]
 	if len(args) != 1 {
@@ -371,7 +334,7 @@ func deleteAnswer(db *sqlx.DB) error {
 }
 
 // createQA inserts a new question answer pair into the database
-func createQA(db *sqlx.DB) error {
+func createQA() error {
 	// check the arguments
 	args := os.Args[2:]
 	if len(args) != 2 {
@@ -393,7 +356,7 @@ func createQA(db *sqlx.DB) error {
 }
 
 // listQA displays a table of all the question answer pairs in the database
-func listQA(db *sqlx.DB) error {
+func listQA() error {
 	// obtain the data
 	q := `SELECT qa_id, question_id, answer_id
                 FROM questions_and_answers`
@@ -414,7 +377,7 @@ func listQA(db *sqlx.DB) error {
 }
 
 // deleteQA deletes a question answer pair from the database
-func deleteQA(db *sqlx.DB) error {
+func deleteQA() error {
 	// check the arguments
 	args := os.Args[2:]
 	if len(args) != 1 {
@@ -440,7 +403,7 @@ func deleteQA(db *sqlx.DB) error {
 }
 
 // createQuestionList inserts a new question/answer class pair into the database
-func createQuestionList(db *sqlx.DB) error {
+func createQuestionList() error {
 	// check the arguments
 	args := os.Args[2:]
 	if len(args) != 2 {
@@ -462,7 +425,7 @@ func createQuestionList(db *sqlx.DB) error {
 }
 
 // listQuestionList displays a table of all the question/answer class pairs in the database
-func listQuestionList(db *sqlx.DB) error {
+func listQuestionList() error {
 	// obtain the data
 	q := `SELECT ql_id, qa_id, class_id
                 FROM question_lists`
@@ -483,7 +446,7 @@ func listQuestionList(db *sqlx.DB) error {
 }
 
 // deleteQuestionList deletes a question/answer class pair from the database
-func deleteQuestionList(db *sqlx.DB) error {
+func deleteQuestionList() error {
 	// check the arguments
 	args := os.Args[2:]
 	if len(args) != 1 {
@@ -509,7 +472,7 @@ func deleteQuestionList(db *sqlx.DB) error {
 }
 
 // createUser inserts a new user into the database
-func createUser(db *sqlx.DB) error {
+func createUser() error {
 	// check the arguments
 	args := os.Args[2:]
 	if len(args) != 1 {
@@ -531,7 +494,7 @@ func createUser(db *sqlx.DB) error {
 }
 
 // listUsers displays a table of all the users in the database
-func listUsers(db *sqlx.DB) error {
+func listUsers() error {
 	// obtain the data
 	q := `SELECT user_id, user_name
                 FROM users`
@@ -552,7 +515,7 @@ func listUsers(db *sqlx.DB) error {
 }
 
 // createClassList inserts a new class list into the database
-func createClassList(db *sqlx.DB) error {
+func createClassList() error {
 	// check the arguments
 	args := os.Args[2:]
 	if len(args) != 2 {
@@ -574,7 +537,7 @@ func createClassList(db *sqlx.DB) error {
 }
 
 // listClassList displays a table of all the class lists in the database
-func listClassList(db *sqlx.DB) error {
+func listClassList() error {
 	// obtain the data
 	q := `SELECT cl_id, class_id, user_id
                 FROM class_lists`
@@ -595,7 +558,7 @@ func listClassList(db *sqlx.DB) error {
 }
 
 // createStudentAnswer inserts a new student answer into the database
-func createStudentAnswer(db *sqlx.DB) error {
+func createStudentAnswer() error {
 	// check the arguments
 	args := os.Args[2:]
 	if len(args) != 3 {
@@ -617,7 +580,7 @@ func createStudentAnswer(db *sqlx.DB) error {
 }
 
 // listStudentAnswers displays a table of all the student answers in the database
-func listStudentAnswers(db *sqlx.DB) error {
+func listStudentAnswers() error {
 	// obtain the data
 	q := `SELECT sa_id, user_id, question_id, answer_id
                 FROM student_answers`
@@ -638,7 +601,7 @@ func listStudentAnswers(db *sqlx.DB) error {
 }
 
 // updateStudentAnswer changes a student answer in the database
-func updateStudentAnswer(db *sqlx.DB) error {
+func updateStudentAnswer() error {
 	// check the arguments
 	args := os.Args[2:]
 	if len(args) != 2 {

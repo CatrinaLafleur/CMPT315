@@ -38,19 +38,23 @@ CREATE TABLE questions_and_answers (
 );
 
 CREATE TABLE question_lists (
-  class_id text NOT NULL REFERENCES classes(class_id),
-  qa_id integer NOT NULL REFERENCES questions_and_answers(qa_id)
+  ql_id serial PRIMARY KEY,
+
+  qa_id integer NOT NULL REFERENCES questions_and_answers(qa_id), 
+  class_id text NOT NULL REFERENCES classes(class_id)
 );
 
 CREATE TABLE class_lists (
+  cl_id serial PRIMARY KEY,
+
   class_id text NOT NULL REFERENCES classes(class_id),
   user_id integer NOT NULL REFERENCES users(user_id)
 );
 
 CREATE TABLE student_answers (
+  sa_id serial PRIMARY KEY,
+
   user_id integer NOT NULL REFERENCES users(user_id),
   question_id integer NOT NULL REFERENCES questions(question_id),
   answer_id integer NOT NULL REFERENCES answers(answer_id)
-
-  UNIQUE(user_id, question_id, answer_id)
 );
