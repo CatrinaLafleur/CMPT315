@@ -16,6 +16,8 @@ import (
 	"net/http"
 	"io"
 	"bytes"
+	"bufio"
+	"strconv"
 
 	"github.com/jmoiron/sqlx"
 	"github.com/lib/pq"
@@ -82,6 +84,7 @@ func main() {
 	
 	//The API handlers
 	http.HandleFunc("/api/v1/classes", handleClasses)
+	http.HandleFunc("/api/v1/classes/questions", handleQuestions)	
 
 	http.ListenAndServe(":8080", nil)
 }
@@ -114,11 +117,6 @@ func handleClasses(w http.ResponseWriter, r *http.Request) {
 		}
 	case "POST":
 		err := createClass()
-		if err != nil {
-			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
-			return
-		}
-		_, err = io.Copy(variable, r.Body)
 		if err != nil {
 			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 			return
@@ -193,20 +191,56 @@ func listClasses(w http.ResponseWriter) error {
 	return nil
 }
 
+//Handles /api/v1/classes/questions
+func handleQuestions(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case "GET":
+		err := listQuestions(w)
+		if err != nil {
+			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+			return
+		}
+		_, err = io.Copy(w, variable)
+		if err != nil {
+			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+			return
+		}
+	case "POST":
+		err := createQuestion()
+		if err != nil {
+			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+			return
+		}
+	case "DELETE":
+		err := deleteQuestion(w)
+		if err != nil {
+			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+			return
+		}
+	default:
+		http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
+		return
+	}
+}
+
 // createQuestion inserts a new Question into the database
 func createQuestion() error {
-	// check the arguments
-	args := os.Args[2:]
-	if len(args) != 1 {
-		return fmt.Errorf("one argument required: prompt")
-	}
-	// insert the data
-	q := `INSERT INTO questions (question_text)
-                   VALUES ($1)`
-	result, err := db.Exec(q, args[0])
+	//With the front end this would be gathered from text boxes
+	fmt.Printf("Enter the question: ")
+	in := bufio.NewReader(os.Stdin)
+	response, err := in.ReadString('\n')
 	if err != nil {
 		return err
 	}
+	
+	// insert the data
+	q := `INSERT INTO questions (question_text)
+                   VALUES ($1)`
+	result, err := db.Exec(q, response)
+	if err != nil {
+		return err
+	}
+	
 	count, err := result.RowsAffected()
 	if err != nil {
 		return err
@@ -237,17 +271,34 @@ func listQuestions(w http.ResponseWriter) error {
 }
 
 // deleteQuestion deletes a question from the database
-func deleteQuestion() error {
-	// check the arguments
-	args := os.Args[2:]
-	if len(args) != 1 {
-		return fmt.Errorf("one argument required: question ID")
+func deleteQuestion(w http.ResponseWriter) error {
+	//With the front end this would be gathered from the button click
+	var response string
+	fmt.Printf("Enter the question id: ")
+	_, err := fmt.Scanln(&response)
+	if err != nil {
+		return err
 	}
 
-	// insert the data
+	//convert the input into an int
+	qID, err := strconv.Atoi(response)
+   	if err != nil {
+   	     return err
+  	}	
+	
+	//delete the question from the child tables first
+	err = deleteQA(qID)
+ 	if err != nil {
+		return err
+	}
+	err = deleteStudentAnswer(qID)
+ 	if err != nil {
+		return err
+	}
+
 	q := `DELETE FROM questions
                     WHERE question_id = $1`
-	result, err := db.Exec(q, args[0])
+	result, err := db.Exec(q, qID)
 	if err != nil {
 		return err
 	}
@@ -256,9 +307,7 @@ func deleteQuestion() error {
 	if err != nil {
 		return err
 	}
-
 	fmt.Printf("%d question(s) deleted.\n", count)
-
 	return nil
 }
 
@@ -307,32 +356,6 @@ func listAnswers() error {
 	return nil
 }
 
-// deleteAnswer deletes an answer from the database
-func deleteAnswer() error {
-	// check the arguments
-	args := os.Args[2:]
-	if len(args) != 1 {
-		return fmt.Errorf("one argument required: answer ID")
-	}
-
-	// insert the data
-	q := `DELETE FROM answers
-                    WHERE answer_id = $1`
-	result, err := db.Exec(q, args[0])
-	if err != nil {
-		return err
-	}
-
-	count, err := result.RowsAffected()
-	if err != nil {
-		return err
-	}
-
-	fmt.Printf("%d answer(s) deleted.\n", count)
-
-	return nil
-}
-
 // createQA inserts a new question answer pair into the database
 func createQA() error {
 	// check the arguments
@@ -377,27 +400,37 @@ func listQA() error {
 }
 
 // deleteQA deletes a question answer pair from the database
-func deleteQA() error {
-	// check the arguments
-	args := os.Args[2:]
-	if len(args) != 1 {
-		return fmt.Errorf("one argument required: QA_ID")
-	}
-
-	// insert the data
-	q := `DELETE FROM questions_and_answers
-                    WHERE qa_id = $1`
-	result, err := db.Exec(q, args[0])
+func deleteQA(qID int) error {
+	// get a list of all the question/answer pairs that use the question being deleted
+	q := `SELECT qa_id, question_id, answer_id
+                FROM questions_and_answers 
+		WHERE question_id = $1`
+	questionAndAnswers := []questionAndAnswer{}
+	err := db.Select(&questionAndAnswers, q, qID)
 	if err != nil {
 		return err
 	}
 
-	count, err := result.RowsAffected()
-	if err != nil {
-		return err
-	}
+	//for each question answer pair remove it from the child table then remove it from the list
+	for _, questionAndAnswer := range questionAndAnswers {
+		err = deleteQuestionList(questionAndAnswer.QAID)
+		if err != nil {
+			return err
+		}
+		// delete the data
+		q := `DELETE FROM questions_and_answers
+	                    WHERE qa_id = $1`
+		result, err := db.Exec(q, questionAndAnswer.QAID)
+		if err != nil {
+			return err
+		}
 
-	fmt.Printf("%d question answer pair(s) deleted.\n", count)
+		count, err := result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		fmt.Printf("%d question answer pair(s) deleted.\n", count)
+	}	
 
 	return nil
 }
@@ -446,29 +479,22 @@ func listQuestionList() error {
 }
 
 // deleteQuestionList deletes a question/answer class pair from the database
-func deleteQuestionList() error {
-	// check the arguments
-	args := os.Args[2:]
-	if len(args) != 1 {
-		return fmt.Errorf("one argument required: QL_ID")
-	}
-
-	// insert the data
+func deleteQuestionList(qaID int) error {
 	q := `DELETE FROM question_lists
-                    WHERE ql_id = $1`
-	result, err := db.Exec(q, args[0])
+                   WHERE qa_id = $1`
+	result, err := db.Exec(q, qaID)
 	if err != nil {
 		return err
 	}
-
+	
 	count, err := result.RowsAffected()
 	if err != nil {
 		return err
 	}
 
 	fmt.Printf("%d question list(s) deleted.\n", count)
-
-	return nil
+	
+	return nil	
 }
 
 // createUser inserts a new user into the database
@@ -607,7 +633,7 @@ func updateStudentAnswer() error {
 	if len(args) != 2 {
 		return fmt.Errorf("two arguments required: sa_id and answer_id")
 	}
-	// insert the data
+	// update the data
 	q := `UPDATE student_answers 
 		SET answer_id = $1
                    Where sa_id = $2`
@@ -621,4 +647,22 @@ func updateStudentAnswer() error {
 	}
 	fmt.Printf("%d student answers(s) updated.\n", count)
 	return nil
+}
+
+// deleteStudentAnswer deletes a student answer from the database based on deleting a question
+func deleteStudentAnswer(qID int) error {
+	q := `DELETE FROM student_answers
+                 WHERE question_id = $1`
+	result, err := db.Exec(q, qID)
+	if err != nil {
+		return err
+	}
+	
+	count, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("%d student Answer(s) deleted.\n", count)
+	return nil	
 }
