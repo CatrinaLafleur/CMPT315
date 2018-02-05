@@ -8,23 +8,27 @@
 package main
 
 import (
-	"fmt"
-	"os"
-	"strings"
-	"math/rand"
-	"time"
-	"net/http"
-	"bytes"
 	"bufio"
+	"bytes"
+	"fmt"
+	"math/rand"
+	"net/http"
+	"os"
 	"strconv"
-
+	"strings"	
+	"time"
+	
 	"github.com/jmoiron/sqlx"
 	"github.com/lib/pq"
 )
 
 var variable *bytes.Buffer = &bytes.Buffer{}
 var db *sqlx.DB
-
+var connectionType = "postgres"
+var connectionString = "dbname=surveysystem user=catrina sslmode=disable"
+var currentClass string = ""
+var currentUser string = ""
+var currentUserId int
 //Create the structures that mirror the database
 type user struct {
 	UserId int    `db:"user_id"`
@@ -82,13 +86,16 @@ func main() {
 	}
 	
 	//The API handlers
+	http.HandleFunc("/api/v1", handleHome)
 	http.HandleFunc("/api/v1/classes", handleClasses)
-	http.HandleFunc("/api/v1/questions", handleQuestions)
+	http.HandleFunc("/api/v1/classes/questions", handleClassQuestions)
+	http.HandleFunc("/api/v1/users/questions", handleUserQuestions)
 	http.HandleFunc("/api/v1/users", handleUsers)
 	http.HandleFunc("/api/v1/responses", handleResponses)	
 
 	http.ListenAndServe(":8080", nil)
 }
+
 //Ensures that the unique constraint is upheld 
 func isUniqueViolation(err error) bool {
 	if err, ok := err.(*pq.Error); ok {
@@ -99,13 +106,21 @@ func isUniqueViolation(err error) bool {
 
 //Database connection string
 func connectToDB() (*sqlx.DB, error) {
-	return sqlx.Connect("postgres", "dbname=surveysystem user=catrina sslmode=disable")
+	return sqlx.Connect(connectionType, connectionString)
+}
+
+//Handles /api/v1
+func handleHome(w http.ResponseWriter, r *http.Request) {
+	fmt.Fprintf(w, "To create a class go to 'http://localhost:8080/api/v1/classes'\n")
+	fmt.Fprintf(w, "To join a class go to 'http://localhost:8080/api/v1/users'\n")	
 }
 
 //Handles /api/v1/classes
 func handleClasses(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case "GET":
+		fmt.Fprintf(w, "Current class: %s\n", currentClass)
+		fmt.Fprintf(w, "Current user: %s\n\n", currentUser)
 		err := listClasses(w)
 		if err != nil {
 			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
@@ -134,6 +149,8 @@ func createClass() error {
 	}
 
 	id := makeString()
+	currentClass = id
+	currentUser = ""
 	// insert the data
 	q := `INSERT INTO classes (class_id, class_name)
                    VALUES ($1, $2)`
@@ -188,10 +205,16 @@ func listClasses(w http.ResponseWriter) error {
 	return nil
 }
 
-//Handles /api/v1/questions
-func handleQuestions(w http.ResponseWriter, r *http.Request) {
+//Handles /api/v1/classes/questions
+func handleClassQuestions(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case "GET":
+		if currentUser != "" {
+			fmt.Fprintf(w, "Users cannot view this page\n")
+			return
+		}
+		fmt.Fprintf(w, "Current class: %s\n", currentClass)
+		fmt.Fprintf(w, "Current user: %s\n\n", currentUser)
 		err := listQuestions(w)
 		if err != nil {
 			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
@@ -216,13 +239,70 @@ func handleQuestions(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	case "POST":
+		if currentUser != "" {
+			fmt.Printf("Users cannot create questions\n")
+			return
+		}
 		err := createQuestion()
 		if err != nil {
 			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 			return
 		}
 	case "DELETE":
+		if currentUser != "" {
+			fmt.Printf("Users cannot delete questions\n")
+			return
+		}
 		err := deleteQuestion(w)
+		if err != nil {
+			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+			return
+		}
+	default:
+		http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
+		return
+	}
+}
+
+//Handles /api/v1/users/questions
+func handleUserQuestions(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case "GET":
+		fmt.Fprintf(w, "Current class: %s\n", currentClass)
+		fmt.Fprintf(w, "Current user: %s\n\n", currentUser)
+		err := listQuestions(w)
+		if err != nil {
+			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+			return
+		}
+		fmt.Fprintf(w, "\n\n")
+		err = listUserAnswers(w)
+		if err != nil {
+			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+			return
+		}
+		fmt.Fprintf(w, "\n\n")
+		err = listQA(w)
+		if err != nil {
+			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+			return
+		}
+	case "POST":
+		if currentUser == "" {
+			fmt.Printf("Only Users can answer a question\n")
+			return
+		}
+		err := createStudentAnswer()
+		if err != nil {
+			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+			return
+		}
+	case "PUT":
+		if currentUser == "" {
+			fmt.Printf("Only Users can change an answer\n")
+			return
+		}
+		err := updateStudentAnswer()
 		if err != nil {
 			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 			return
@@ -235,13 +315,6 @@ func handleQuestions(w http.ResponseWriter, r *http.Request) {
 
 // createQuestion inserts a new Question into the database
 func createQuestion() error {
-	var classID string
-	fmt.Printf("Enter the class Id you are in: ")
-	_, err := fmt.Scanln(&classID)
-	if err != nil {
-		return err
-	}
-
 	//With the front end this would be gathered from text boxes
 	fmt.Printf("Enter the question: ")
 	in := bufio.NewReader(os.Stdin)
@@ -275,7 +348,7 @@ func createQuestion() error {
 	}
 
 	//create answers for the question
-	err = createAnswer(max, classID)
+	err = createAnswer(max)
 	if err != nil {
 		return err
 	}
@@ -353,7 +426,7 @@ func deleteQuestion(w http.ResponseWriter) error {
 }
 
 // createAnswer inserts a new answer into the database
-func createAnswer(qid int, classID string) error {
+func createAnswer(qid int) error {
 	//With the front end this would be gathered from text boxes
 	fmt.Printf("Enter the answer: ")
 	in := bufio.NewReader(os.Stdin)
@@ -399,7 +472,7 @@ func createAnswer(qid int, classID string) error {
 	}
 
 	//create question answer pair
-	err = createQA(qid, max, classID)
+	err = createQA(qid, max)
 	if err != nil {
 		return err
 	}
@@ -423,7 +496,7 @@ func createAnswer(qid int, classID string) error {
    	     return err
   	}
 	if check == 1 {
-		createAnswer(qid, classID)	
+		createAnswer(qid)	
 	}
 	
 	return nil
@@ -451,8 +524,30 @@ func listAnswers(w http.ResponseWriter) error {
 	return nil
 }
 
+// listAnswers displays a table of all the answers in the database
+func listUserAnswers(w http.ResponseWriter) error {
+	// obtain the data
+	q := `SELECT answer_id, answer_text, is_correct
+                FROM answers`
+	answers := []answer{}
+	err := db.Select(&answers, q)
+	if err != nil {
+		return err
+	}
+	
+	// display the data
+	fmt.Fprintf(w, "Answers:\n")
+	fmt.Fprintf(w, "ID   text	\n")
+	fmt.Fprintf(w, "--------------------------------\n")
+	for _, answer := range answers {
+		fmt.Fprintf(w, "%-4d %s\n", answer.AnswerId, answer.AnswerText)
+	}
+
+	return nil
+}
+
 // createQA inserts a new question answer pair into the database
-func createQA(qid int, aid int, classID string) error {
+func createQA(qid int, aid int) error {
 	// insert the data
 	q := `INSERT INTO questions_and_answers (question_id, answer_id)
                    VALUES ($1, $2)`
@@ -480,8 +575,8 @@ func createQA(qid int, aid int, classID string) error {
 		}
 	}
 
-	//create answers for the question
-	err = createQuestionList(max, classID)
+	//create question/class list for the question
+	err = createQuestionList(max)
 	if err != nil {
 		return err
 	}
@@ -549,11 +644,11 @@ func deleteQA(qID int) error {
 }
 
 // createQuestionList inserts a new question/answer class pair into the database
-func createQuestionList(qaID int, classID string) error {
+func createQuestionList(qaID int) error {
 	// insert the data
 	q := `INSERT INTO question_lists (qa_id, class_id)
                    VALUES ($1, $2)`
-	result, err := db.Exec(q, qaID, classID)
+	result, err := db.Exec(q, qaID, currentClass)
 	if err != nil {
 		return err
 	}
@@ -610,6 +705,8 @@ func deleteQuestionList(qaID int) error {
 func handleUsers(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case "GET":
+		fmt.Fprintf(w, "Current class: %s\n", currentClass)
+		fmt.Fprintf(w, "Current user: %s\n\n", currentUser)
 		err := listUsers(w)
 		if err != nil {
 			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
@@ -642,13 +739,16 @@ func createUser() error {
 	if err != nil {
 		return err
 	}
-	var response string
 	fmt.Printf("Enter your user name: ")
-	_, err = fmt.Scanln(&response)
+	in := bufio.NewReader(os.Stdin)
+	response, err := in.ReadString('\n')
+	response = response[:len(response)-1]
 	if err != nil {
 		return err
 	}
 
+	currentClass = classID
+	currentUser = response
 	// insert the data
 	q := `INSERT INTO users (user_name)
                    VALUES ($1)`
@@ -657,7 +757,7 @@ func createUser() error {
 		return err
 	}
 
-	//Find the id of the question created
+	//Find the id of the user created
 	max := 0	
 	q = `SELECT user_id
                 FROM users`
@@ -671,8 +771,8 @@ func createUser() error {
 			max = user.UserId		
 		}
 	}
-
-	//create answers for the question
+	
+	currentUserId = max
 	err = createClassList(max, classID)
 	if err != nil {
 		return err
@@ -751,19 +851,13 @@ func listClassList(w http.ResponseWriter) error {
 func handleResponses(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case "GET":
+		if currentUser != "" {
+			fmt.Fprintf(w, "Users cannot view responses\n")
+			return
+		}
+		fmt.Fprintf(w, "Current class: %s\n", currentClass)
+		fmt.Fprintf(w, "Current user: %s\n\n", currentUser)
 		err := listStudentAnswers(w)
-		if err != nil {
-			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
-			return
-		}
-	case "POST":
-		err := createStudentAnswer()
-		if err != nil {
-			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
-			return
-		}
-	case "PUT":
-		err := updateStudentAnswer()
 		if err != nil {
 			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 			return
@@ -777,15 +871,9 @@ func handleResponses(w http.ResponseWriter, r *http.Request) {
 // createStudentAnswer inserts a new student answer into the database
 func createStudentAnswer() error {
 	//With the front end this would be gathered from the button click
-	var userId string
-	fmt.Printf("Enter the user id: ")
-	_, err := fmt.Scanln(&userId)
-	if err != nil {
-		return err
-	}
 	var questionId string
 	fmt.Printf("Enter the question id: ")
-	_, err = fmt.Scanln(&questionId)
+	_, err := fmt.Scanln(&questionId)
 	if err != nil {
 		return err
 	}
@@ -796,10 +884,6 @@ func createStudentAnswer() error {
 		return err
 	}
 	//convert the input into an int
-	uID, err := strconv.Atoi(userId)
-   	if err != nil {
-   	     return err
-  	}
 	qID, err := strconv.Atoi(questionId)
    	if err != nil {
    	     return err
@@ -812,7 +896,7 @@ func createStudentAnswer() error {
 	// insert the data
 	q := `INSERT INTO student_answers (user_id, question_id, answer_id)
                    VALUES ($1, $2, $3)`
-	result, err := db.Exec(q, uID, qID, aID)
+	result, err := db.Exec(q, currentUserId, qID, aID)
 	if err != nil {
 		return err
 	}
@@ -866,6 +950,10 @@ func updateStudentAnswer() error {
    	if err != nil {
    	     return err
   	}
+	if saID != currentUserId {
+		fmt.Printf("Users can only change their own answers\n")	
+		return nil
+	}
 	aID, err := strconv.Atoi(answerId)
    	if err != nil {
    	     return err
