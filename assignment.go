@@ -84,7 +84,8 @@ func main() {
 	
 	//The API handlers
 	http.HandleFunc("/api/v1/classes", handleClasses)
-	http.HandleFunc("/api/v1/classes/questions", handleQuestions)	
+	http.HandleFunc("/api/v1/questions", handleQuestions)
+	http.HandleFunc("/api/v1/users", handleUsers)	
 
 	http.ListenAndServe(":8080", nil)
 }
@@ -182,6 +183,7 @@ func listClasses(w http.ResponseWriter) error {
 	}
 
 	// display the data
+	fmt.Fprintf(w, "Classes:\n")
 	fmt.Fprintf(w, "ID   name\n")
 	fmt.Fprintf(w, "--------------------------------\n")
 	for _, class := range classes {
@@ -191,7 +193,7 @@ func listClasses(w http.ResponseWriter) error {
 	return nil
 }
 
-//Handles /api/v1/classes/questions
+//Handles /api/v1/questions
 func handleQuestions(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case "GET":
@@ -235,8 +237,6 @@ func handleQuestions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 }
-
-
 
 // createQuestion inserts a new Question into the database
 func createQuestion() error {
@@ -434,8 +434,6 @@ func createAnswer(qid int, classID string) error {
 	return nil
 }
 
-
-
 // listAnswers displays a table of all the answers in the database
 func listAnswers(w http.ResponseWriter) error {
 	// obtain the data
@@ -613,20 +611,78 @@ func deleteQuestionList(qaID int) error {
 	return nil	
 }
 
+//Handles /api/v1/users
+func handleUsers(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case "GET":
+		err := listUsers(w)
+		if err != nil {
+			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+			return
+		}
+		fmt.Fprintf(w, "\n\n")
+		err = listClassList(w)
+		if err != nil {
+			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+			return
+		}
+	case "POST":
+		err := createUser()
+		if err != nil {
+			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+			return
+		}
+	default:
+		http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
+		return
+	}
+}
+
 // createUser inserts a new user into the database
 func createUser() error {
-	// check the arguments
-	args := os.Args[2:]
-	if len(args) != 1 {
-		return fmt.Errorf("one argument required: name")
-	}
-	// insert the data
-	q := `INSERT INTO users (user_name)
-                   VALUES ($1)`
-	result, err := db.Exec(q, args[0])
+	//With the front end this would be gathered from text boxes
+	var classID string
+	fmt.Printf("Enter the class ID: ")
+	_, err := fmt.Scanln(&classID)
 	if err != nil {
 		return err
 	}
+	var response string
+	fmt.Printf("Enter your user name: ")
+	_, err = fmt.Scanln(&response)
+	if err != nil {
+		return err
+	}
+
+	// insert the data
+	q := `INSERT INTO users (user_name)
+                   VALUES ($1)`
+	result, err := db.Exec(q, response)
+	if err != nil {
+		return err
+	}
+
+	//Find the id of the question created
+	max := 0	
+	q = `SELECT user_id
+                FROM users`
+	users := []user{}
+	err = db.Select(&users, q)
+	if err != nil {
+		return err
+	}
+	for _, user := range users {
+		if user.UserId > max {
+			max = user.UserId		
+		}
+	}
+
+	//create answers for the question
+	err = createClassList(max, classID)
+	if err != nil {
+		return err
+	}	
+	
 	count, err := result.RowsAffected()
 	if err != nil {
 		return err
@@ -636,7 +692,7 @@ func createUser() error {
 }
 
 // listUsers displays a table of all the users in the database
-func listUsers() error {
+func listUsers(w http.ResponseWriter) error {
 	// obtain the data
 	q := `SELECT user_id, user_name
                 FROM users`
@@ -647,26 +703,22 @@ func listUsers() error {
 	}
 
 	// display the data
-	fmt.Printf("ID   name\n")
-	fmt.Printf("--------------------------------\n")
+	fmt.Fprintf(w, "Users:\n")
+	fmt.Fprintf(w, "ID   name\n")
+	fmt.Fprintf(w, "--------------------------------\n")
 	for _, user := range users {
-		fmt.Printf("%-4d %s\n", user.UserId, user.UserName)
+		fmt.Fprintf(w, "%-4d %s\n", user.UserId, user.UserName)
 	}
 
 	return nil
 }
 
 // createClassList inserts a new class list into the database
-func createClassList() error {
-	// check the arguments
-	args := os.Args[2:]
-	if len(args) != 2 {
-		return fmt.Errorf("two arguments required: class_id and user_id")
-	}
+func createClassList(userID int, classID string) error {
 	// insert the data
 	q := `INSERT INTO class_lists (class_id, user_id)
                    VALUES ($1, $2)`
-	result, err := db.Exec(q, args[0], args[1])
+	result, err := db.Exec(q, classID, userID)
 	if err != nil {
 		return err
 	}
@@ -679,7 +731,7 @@ func createClassList() error {
 }
 
 // listClassList displays a table of all the class lists in the database
-func listClassList() error {
+func listClassList(w http.ResponseWriter) error {
 	// obtain the data
 	q := `SELECT cl_id, class_id, user_id
                 FROM class_lists`
@@ -690,10 +742,11 @@ func listClassList() error {
 	}
 
 	// display the data
-	fmt.Printf("ID   class_id	user_id\n")
-	fmt.Printf("--------------------------------\n")
+	fmt.Fprintf(w, "Class List:\n")
+	fmt.Fprintf(w, "ID   class_id	user_id\n")
+	fmt.Fprintf(w, "--------------------------------\n")
 	for _, classList := range classLists {
-		fmt.Printf("%-4d %s \t%d\n", classList.CLID, classList.ClassId, classList.UserId)
+		fmt.Fprintf(w, "%-4d %s \t%d\n", classList.CLID, classList.ClassId, classList.UserId)
 	}
 
 	return nil
@@ -722,7 +775,7 @@ func createStudentAnswer() error {
 }
 
 // listStudentAnswers displays a table of all the student answers in the database
-func listStudentAnswers() error {
+func listStudentAnswers(w http.ResponseWriter) error {
 	// obtain the data
 	q := `SELECT sa_id, user_id, question_id, answer_id
                 FROM student_answers`
@@ -733,10 +786,11 @@ func listStudentAnswers() error {
 	}
 
 	// display the data
-	fmt.Printf("ID   user_id	question_id	answer_id\n")
-	fmt.Printf("--------------------------------------------------\n")
+	fmt.Fprintf(w, "Student answers:\n")
+	fmt.Fprintf(w, "ID   user_id	question_id	answer_id\n")
+	fmt.Fprintf(w, "--------------------------------------------------\n")
 	for _, studentAnswer := range studentAnswers {
-		fmt.Printf("%-4d \t%d \t%d \t\t%d\n", studentAnswer.SAID, studentAnswer.UserID, studentAnswer.QuestionId, studentAnswer.AnswerId)
+		fmt.Fprintf(w, "%-4d \t%d \t%d \t\t%d\n", studentAnswer.SAID, studentAnswer.UserID, studentAnswer.QuestionId, studentAnswer.AnswerId)
 	}
 
 	return nil
