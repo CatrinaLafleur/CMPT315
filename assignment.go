@@ -200,7 +200,20 @@ func handleQuestions(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 			return
 		}
-		_, err = io.Copy(w, variable)
+		fmt.Fprintf(w, "\n\n")
+		err = listAnswers(w)
+		if err != nil {
+			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+			return
+		}
+		fmt.Fprintf(w, "\n\n")
+		err = listQA(w)
+		if err != nil {
+			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+			return
+		}
+		fmt.Fprintf(w, "\n\n")
+		err = listQuestionList(w)
 		if err != nil {
 			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 			return
@@ -223,12 +236,22 @@ func handleQuestions(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+
+
 // createQuestion inserts a new Question into the database
 func createQuestion() error {
+	var classID string
+	fmt.Printf("Enter the class Id you are in: ")
+	_, err := fmt.Scanln(&classID)
+	if err != nil {
+		return err
+	}
+
 	//With the front end this would be gathered from text boxes
 	fmt.Printf("Enter the question: ")
 	in := bufio.NewReader(os.Stdin)
 	response, err := in.ReadString('\n')
+	response = response[:len(response)-1]
 	if err != nil {
 		return err
 	}
@@ -241,10 +264,32 @@ func createQuestion() error {
 		return err
 	}
 	
+	//Find the id of the question created
+	max := 0	
+	q = `SELECT question_id
+                FROM questions`
+	questions := []question{}
+	err = db.Select(&questions, q)
+	if err != nil {
+		return err
+	}
+	for _, question := range questions {
+		if question.QuestionId > max {
+			max = question.QuestionId		
+		}
+	}
+
+	//create answers for the question
+	err = createAnswer(max, classID)
+	if err != nil {
+		return err
+	}
+
 	count, err := result.RowsAffected()
 	if err != nil {
 		return err
 	}
+	
 	fmt.Printf("%d question(s) created.\n", count)
 	return nil
 }
@@ -261,6 +306,7 @@ func listQuestions(w http.ResponseWriter) error {
 	}
 
 	// display the data
+	fmt.Fprintf(w, "Questions:\n")
 	fmt.Fprintf(w, "ID   prompt\n")
 	fmt.Fprintf(w, "--------------------------------\n")
 	for _, question := range questions {
@@ -312,31 +358,86 @@ func deleteQuestion(w http.ResponseWriter) error {
 }
 
 // createAnswer inserts a new answer into the database
-func createAnswer() error {
-	// check the arguments
-	args := os.Args[2:]
-	if len(args) != 2 {
-		return fmt.Errorf("two arguments required: text and isCorrect")
-	}
-	// insert the data
-	q := `INSERT INTO answers (answer_text, is_correct)
-                   VALUES ($1, $2)`
-	result, err := db.Exec(q, args[0], args[1])
+func createAnswer(qid int, classID string) error {
+	//With the front end this would be gathered from text boxes
+	fmt.Printf("Enter the answer: ")
+	in := bufio.NewReader(os.Stdin)
+	answerText, err := in.ReadString('\n')
+	answerText = answerText[:len(answerText)-1]
 	if err != nil {
 		return err
 	}
+
+	var correctText string
+	fmt.Printf("Is this answer correct (true or false): ")
+	_, err = fmt.Scanln(&correctText)
+	if err != nil {
+		return err
+	}
+	
+	correct, err := strconv.ParseBool(correctText)
+	if err != nil {
+		return err
+	}
+
+	// insert the data
+	q := `INSERT INTO answers (answer_text, is_correct)
+                   VALUES ($1, $2)`
+	result, err := db.Exec(q, answerText, correct)
+	if err != nil {
+		return err
+	}
+
+	//Find the id of the answer created
+	max := 0	
+	q = `SELECT answer_id
+                FROM answers`
+	answers := []answer{}
+	err = db.Select(&answers, q)
+	if err != nil {
+		return err
+	}
+	for _, answer := range answers {
+		if answer.AnswerId > max {
+			max = answer.AnswerId		
+		}
+	}
+
+	//create question answer pair
+	err = createQA(qid, max, classID)
+	if err != nil {
+		return err
+	}
+
 	count, err := result.RowsAffected()
 	if err != nil {
 		return err
 	}
 	fmt.Printf("%d answers(s) created.\n", count)
+
+	//check if more answers need to be created
+	var response string
+	fmt.Printf("Do more answers need to be created (1 for yes, 0 for no): ")
+	_, err = fmt.Scanln(&response)
+	if err != nil {
+		return err
+	}
+	//convert the input into an int
+	check, err := strconv.Atoi(response)
+   	if err != nil {
+   	     return err
+  	}
+	if check == 1 {
+		createAnswer(qid, classID)	
+	}
+	
 	return nil
 }
 
 
 
 // listAnswers displays a table of all the answers in the database
-func listAnswers() error {
+func listAnswers(w http.ResponseWriter) error {
 	// obtain the data
 	q := `SELECT answer_id, answer_text, is_correct
                 FROM answers`
@@ -345,28 +446,24 @@ func listAnswers() error {
 	if err != nil {
 		return err
 	}
-
+	
 	// display the data
-	fmt.Printf("ID   text	isCorrect\n")
-	fmt.Printf("--------------------------------\n")
+	fmt.Fprintf(w, "Answers:\n")
+	fmt.Fprintf(w, "ID   text	isCorrect\n")
+	fmt.Fprintf(w, "--------------------------------\n")
 	for _, answer := range answers {
-		fmt.Printf("%-4d %s \t%v\n", answer.AnswerId, answer.AnswerText, answer.IsCorrect)
+		fmt.Fprintf(w, "%-4d %s \t%v\n", answer.AnswerId, answer.AnswerText, answer.IsCorrect)
 	}
 
 	return nil
 }
 
 // createQA inserts a new question answer pair into the database
-func createQA() error {
-	// check the arguments
-	args := os.Args[2:]
-	if len(args) != 2 {
-		return fmt.Errorf("two arguments required: question_id and answer_id")
-	}
+func createQA(qid int, aid int, classID string) error {
 	// insert the data
 	q := `INSERT INTO questions_and_answers (question_id, answer_id)
                    VALUES ($1, $2)`
-	result, err := db.Exec(q, args[0], args[1])
+	result, err := db.Exec(q, qid, aid)
 	if err != nil {
 		return err
 	}
@@ -374,12 +471,34 @@ func createQA() error {
 	if err != nil {
 		return err
 	}
+
+	//Find the id of the question answer pair created
+	max := 0	
+	q = `SELECT qa_id
+                FROM questions_and_answers`
+	questionAndAnswers := []questionAndAnswer{}
+	err = db.Select(&questionAndAnswers, q)
+	if err != nil {
+		return err
+	}
+	for _, questionAndAnswer := range questionAndAnswers {
+		if questionAndAnswer.QAID > max {
+			max = questionAndAnswer.QAID		
+		}
+	}
+
+	//create answers for the question
+	err = createQuestionList(max, classID)
+	if err != nil {
+		return err
+	}
+
 	fmt.Printf("%d question answer pair(s) created.\n", count)
 	return nil
 }
 
 // listQA displays a table of all the question answer pairs in the database
-func listQA() error {
+func listQA(w http.ResponseWriter) error {
 	// obtain the data
 	q := `SELECT qa_id, question_id, answer_id
                 FROM questions_and_answers`
@@ -390,10 +509,11 @@ func listQA() error {
 	}
 
 	// display the data
-	fmt.Printf("ID   question_id	answer_id\n")
-	fmt.Printf("--------------------------------\n")
+	fmt.Fprintf(w, "Question Answer pairs:\n")
+	fmt.Fprintf(w, "ID   question_id	answer_id\n")
+	fmt.Fprintf(w, "--------------------------------\n")
 	for _, questionAndAnswer := range questionAndAnswers {
-		fmt.Printf("%-4d %-4d \t\t%-4d\n", questionAndAnswer.QAID, questionAndAnswer.QuestionId, questionAndAnswer.AnswerId)
+		fmt.Fprintf(w, "%-4d %-4d \t\t%-4d\n", questionAndAnswer.QAID, questionAndAnswer.QuestionId, questionAndAnswer.AnswerId)
 	}
 
 	return nil
@@ -436,16 +556,11 @@ func deleteQA(qID int) error {
 }
 
 // createQuestionList inserts a new question/answer class pair into the database
-func createQuestionList() error {
-	// check the arguments
-	args := os.Args[2:]
-	if len(args) != 2 {
-		return fmt.Errorf("two arguments required: qa_id and class_id")
-	}
+func createQuestionList(qaID int, classID string) error {
 	// insert the data
 	q := `INSERT INTO question_lists (qa_id, class_id)
                    VALUES ($1, $2)`
-	result, err := db.Exec(q, args[0], args[1])
+	result, err := db.Exec(q, qaID, classID)
 	if err != nil {
 		return err
 	}
@@ -458,7 +573,7 @@ func createQuestionList() error {
 }
 
 // listQuestionList displays a table of all the question/answer class pairs in the database
-func listQuestionList() error {
+func listQuestionList(w http.ResponseWriter) error {
 	// obtain the data
 	q := `SELECT ql_id, qa_id, class_id
                 FROM question_lists`
@@ -469,10 +584,11 @@ func listQuestionList() error {
 	}
 
 	// display the data
-	fmt.Printf("ID   qa_id	class_id\n")
-	fmt.Printf("--------------------------------\n")
+	fmt.Fprintf(w, "Question and Class List:\n")
+	fmt.Fprintf(w, "ID   qa_id	class_id\n")
+	fmt.Fprintf(w, "--------------------------------\n")
 	for _, question_list := range question_lists {
-		fmt.Printf("%-4d %-4d \t%s\n", question_list.QLID, question_list.QAID, question_list.ClassId)
+		fmt.Fprintf(w, "%-4d %-4d \t%s\n", question_list.QLID, question_list.QAID, question_list.ClassId)
 	}
 
 	return nil
