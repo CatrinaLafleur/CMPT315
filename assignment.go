@@ -14,7 +14,6 @@ import (
 	"math/rand"
 	"time"
 	"net/http"
-	"io"
 	"bytes"
 	"bufio"
 	"strconv"
@@ -85,7 +84,8 @@ func main() {
 	//The API handlers
 	http.HandleFunc("/api/v1/classes", handleClasses)
 	http.HandleFunc("/api/v1/questions", handleQuestions)
-	http.HandleFunc("/api/v1/users", handleUsers)	
+	http.HandleFunc("/api/v1/users", handleUsers)
+	http.HandleFunc("/api/v1/responses", handleResponses)	
 
 	http.ListenAndServe(":8080", nil)
 }
@@ -107,11 +107,6 @@ func handleClasses(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case "GET":
 		err := listClasses(w)
-		if err != nil {
-			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
-			return
-		}
-		_, err = io.Copy(w, variable)
 		if err != nil {
 			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 			return
@@ -752,17 +747,72 @@ func listClassList(w http.ResponseWriter) error {
 	return nil
 }
 
+//Handles /api/v1/responses
+func handleResponses(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case "GET":
+		err := listStudentAnswers(w)
+		if err != nil {
+			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+			return
+		}
+	case "POST":
+		err := createStudentAnswer()
+		if err != nil {
+			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+			return
+		}
+	case "PUT":
+		err := updateStudentAnswer()
+		if err != nil {
+			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+			return
+		}
+	default:
+		http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
+		return
+	}
+}
+
 // createStudentAnswer inserts a new student answer into the database
 func createStudentAnswer() error {
-	// check the arguments
-	args := os.Args[2:]
-	if len(args) != 3 {
-		return fmt.Errorf("three arguments required: user_id, question_id, and answer_id")
+	//With the front end this would be gathered from the button click
+	var userId string
+	fmt.Printf("Enter the user id: ")
+	_, err := fmt.Scanln(&userId)
+	if err != nil {
+		return err
 	}
+	var questionId string
+	fmt.Printf("Enter the question id: ")
+	_, err = fmt.Scanln(&questionId)
+	if err != nil {
+		return err
+	}
+	var answerId string
+	fmt.Printf("Enter the answer id: ")
+	_, err = fmt.Scanln(&answerId)
+	if err != nil {
+		return err
+	}
+	//convert the input into an int
+	uID, err := strconv.Atoi(userId)
+   	if err != nil {
+   	     return err
+  	}
+	qID, err := strconv.Atoi(questionId)
+   	if err != nil {
+   	     return err
+  	}
+	aID, err := strconv.Atoi(answerId)
+   	if err != nil {
+   	     return err
+  	}
+
 	// insert the data
 	q := `INSERT INTO student_answers (user_id, question_id, answer_id)
                    VALUES ($1, $2, $3)`
-	result, err := db.Exec(q, args[0], args[1], args[2])
+	result, err := db.Exec(q, uID, qID, aID)
 	if err != nil {
 		return err
 	}
@@ -798,16 +848,33 @@ func listStudentAnswers(w http.ResponseWriter) error {
 
 // updateStudentAnswer changes a student answer in the database
 func updateStudentAnswer() error {
-	// check the arguments
-	args := os.Args[2:]
-	if len(args) != 2 {
-		return fmt.Errorf("two arguments required: sa_id and answer_id")
+	//With the front end this would be gathered from the button click
+	var studentAnswerId string
+	fmt.Printf("Enter the student answer id: ")
+	_, err := fmt.Scanln(&studentAnswerId)
+	if err != nil {
+		return err
 	}
+	var answerId string
+	fmt.Printf("Enter the answer id: ")
+	_, err = fmt.Scanln(&answerId)
+	if err != nil {
+		return err
+	}
+	//convert the input into an int
+	saID, err := strconv.Atoi(studentAnswerId)
+   	if err != nil {
+   	     return err
+  	}
+	aID, err := strconv.Atoi(answerId)
+   	if err != nil {
+   	     return err
+  	}
 	// update the data
 	q := `UPDATE student_answers 
 		SET answer_id = $1
                    Where sa_id = $2`
-	result, err := db.Exec(q, args[1], args[0])
+	result, err := db.Exec(q, aID, saID)
 	if err != nil {
 		return err
 	}
